@@ -105,7 +105,7 @@ _download_chapter(){
 search(){
     [ $1 == "search" ] && QUERY="${@:2}" || QUERY="$@"
     QUERY_STRINGS="--url-query page=1 --url-query limit=20 --url-query q='$QUERY'"
-    format_run "$CURL_CMD" "${BASE_URL}/v1.0/search/" | jq -r .[].slug | parallel "$PARALLEL_OPTS" "get_info {}"
+    format_run "$CURL_CMD $QUERY_STRINGS" "${BASE_URL}/v1.0/search/" | jq -r .[].slug | parallel "$PARALLEL_OPTS" "get_info {}"
     run_fzf "-q $QUERY"
 }
 
