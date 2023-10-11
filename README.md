@@ -1,6 +1,8 @@
 # comickfzf
 Fzf script for downloading comicks/mangas from comick.app
 
+![Preview](https://i.imgur.com/uhiqBW8.gif)
+
 ## Dependencies
 - jq
 - parallel
@@ -14,7 +16,7 @@ Fzf script for downloading comicks/mangas from comick.app
 2. copy `comickfzf` to one of `PATH` directories
 
 ### Usage
-first the script needs to store trend mangas in `$CACHE_SESSION` directory using
+first the script needs to store trend mangas in `$CACHE_SESSION` directory using (it takes some time be patient :) )
 ```sh
 comickfzf update
 ```
