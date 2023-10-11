@@ -1,0 +1,211 @@
+#!/bin/bash
+BASE_URL="https://api.comick.app"
+CURL_CMD=${CURL_CMD:="curl -s -X 'GET' '%s' -H 'accept: application/json' -A 'Mozilla/5.0'"}
+CURL_DL=${CURL_DL:="curl -s -t 20 -o '%s' '%s'"}
+ARIA2C_OPTS=${ARIA2C_OPTS:=""}
+PARALLEL_OPTS=${PARALLEL_OPTS:="--bar"}
+DL_FOLDER=${DL_FOLDER:="$HOME/Downloads/comick"}
+SESSION_CACHE=${SESSION_CACHE:="$HOME/.cache/comick"}
+DETAIL_BELOW=${DETAIL_BELOW:=""}
+LANGUAGE=${LANGUAGE:="en"}
+CHAPTER_LIMIT=${CHAPTER_LIMIT:="500"}
+
+format_run(){
+    printf "$@" | sh
+}
+
+get_info (){
+    SLUG=$1
+    [ -d "${SESSION_CACHE}/$SLUG" ] && return 1
+    INFO=$(format_run "$CURL_CMD" "${BASE_URL}/comic/$SLUG")
+    THUMBNAIL=$(echo $INFO | jq -r .comic.md_covers[0].b2key)
+    mkdir -p ${SESSION_CACHE}/$SLUG
+    format_run "$CURL_DL" "${SESSION_CACHE}/${SLUG}/thumbnail.jpg" "https://meo.comick.pictures/$THUMBNAIL"
+
+    echo $INFO | jq -r \
+        --arg BOLD $'\033[1m'\
+        --arg NORMAL $'\033[0m'\
+        '.demographic as $demographic | .comic  | "Hid: \(.hid)\n\($BOLD)Title:\($NORMAL) \(.title)\n\($BOLD)Description:\($NORMAL) \(.desc)\n\($BOLD)Category:\($NORMAL) \($demographic)\n\($BOLD)Year:\($NORMAL) \(.year)\n\($BOLD)Last chapter:\($NORMAL) \(.last_chapter)\n\($BOLD)Geners:\($NORMAL) \(.mu_comics.mu_comic_categories[:20] | map(.mu_categories.slug) | join(" #"))" ' > ${SESSION_CACHE}/$SLUG/info
+}
+create_cache(){
+    mkdir -p $SESSION_CACHE
+    format_run "$CURL_CMD" "${BASE_URL}/top?comic_types=manga" | jq -r '.rank[] | @base64' | parallel "$PARALLEL_OPTS" 'get_info "$(echo {} | base64 --decode | jq -r .slug)"'
+}
+
+help (){
+    cat >&2 << helpMessage
+    Usage: ${0##*/} 
+
+    A fzf script for downloading manga with comick.app api
+
+    Options:
+
+    update  |  creating/updating cache directory
+    fzf     |  opens fzf in CACHE directory
+    search  |  searches for a manga and opens fzf
+    help    |  showing this message
+
+helpMessage
+}
+_start_ueberzug() {
+    mkfifo "${UEBERZUG_FIFO}"
+    <"${UEBERZUG_FIFO}" \
+        ueberzug layer --parser bash --silent &
+            # prevent EOF
+            3>"${UEBERZUG_FIFO}" \
+                exec
+}
+function _finalise_ueberzug {
+    # TODO: doesn't work, fifo will exists even after fzf is done
+    rm "${UEBERZUG_FIFO}"
+    kill $(jobs -p)
+}
+function _draw_preview {
+    X=$((FZF_PREVIEW_COLUMNS + 10))
+    Y=1
+
+    >"${UEBERZUG_FIFO}" declare -A -p cmd=( \
+        [action]=add [identifier]="${PREVIEW_ID}" \
+        [x]="$X" [y]="$Y" \
+        [width]="30" [height]="20" \
+        [scaler]=forced_cover [scaling_position_x]=0.5 [scaling_position_y]=0.5 \
+        [path]="$1")
+}
+
+
+_display_text_right(){
+    SPACES="$(printf ' %.0s' {1..35})"
+    fold -s -w 40 | sed -e "s#^#$SPACES#g"
+}
+
+_display_text_below(){
+    IMAGE_SEP="$(printf '\r\\n%.0s' {1..20})"
+    sed "1i\\$IMAGE_SEP"
+}
+
+
+_download_chapter(){
+    HID="$1"
+    DL_FOLDER="$2"
+    DL_URL="https://meo.comick.pictures"
+    URL_FILE=$(mktemp)
+    TMP_DL=$(mktemp -d)
+    CHAPTER_JSON=$(format_run "${CURL_CMD}" "${BASE_URL}/chapter/$HID")
+    CBZ_NAME=$(echo $CHAPTER_JSON | jq -r .seoTitle | tr ' ' '_')
+    mkdir -p "${DL_FOLDER}"
+
+    format_run "${CURL_CMD}" "${BASE_URL}/chapter/$HID" | jq -r '.chapter.md_images[].b2key' | xargs -I{} -d'\n' sh -c "printf '${DL_URL}/{}\n'" > $URL_FILE
+
+    aria2c "$ARIA2C_OPTS" --dir "$TMP_DL" -i "$URL_FILE"
+
+    # TODO: if cbz file exists it will append 
+    zip -r "${DL_FOLDER}/${CBZ_NAME%.*}.cbz" "${TMP_DL}"
+    rm -r "$URL_FILE" "$TMP_DL"
+}
+search(){
+    [ $1 == "search" ] && QUERY="${@:2}" || QUERY="$@"
+    QUERY_STRINGS="--url-query page=1 --url-query limit=20 --url-query q='$QUERY'"
+    format_run "$CURL_CMD" "${BASE_URL}/v1.0/search/" | jq -r .[].slug | parallel "$PARALLEL_OPTS" "get_info {}"
+    run_fzf "-q $QUERY"
+}
+
+get_chapter_info (){
+    CHAPTER_JSON="$1"
+    MANGA_PATH="$2"
+    _jq (){
+        jq -r "$1" <<< "$CHAPTER_JSON"
+    }
+
+    CHAPTER=$(_jq '.chap | select(.!=null)')
+    VOLUME=$(_jq '.vol | select(.!=null)')
+    HID=$(_jq .hid)
+    INFO_PATH="${MANGA_PATH}/chapters/${HID}"
+
+    [ $CHAPTER ] && CHAPTER="ch: $CHAPTER"
+    [ $VOLUME ] && VOLUME="vol: $VOLUME "
+
+    INDEX=$(printf '%s%s' "$VOLUME" "$CHAPTER")
+
+    if [[ ! -d $INFO_PATH ]]
+    then
+        echo "$HID,$INDEX" >> ${MANGA_PATH}/chap
+    fi
+
+    mkdir -p $INFO_PATH
+
+    echo "$CHAPTER_JSON" | jq -r\
+        --arg BOLD $'\033[1m'\
+        --arg NORMAL $'\033[0m'\
+        '. | "Hid: \(.hid)\n\($BOLD)Title:\($NORMAL) \(.title)\n\($BOLD)Volume:\($NORMAL) \(.vol)\n\($BOLD)Chapter:\($NORMAL) \(.chap)\nBy \(.group_name[0]) group" ' > "${INFO_PATH}/info"
+}
+
+get_all_chapters_info(){
+    # $1: hid
+    # $2: info file
+    MANGA_HID=$1
+    MANGA_SLUG=$2
+
+    MANGA_PATH="${SESSION_CACHE}/${MANGA_SLUG}"
+    if [ -f "${MANGA_PATH}/chap" ] && [[ "$(stat -c '%Y' ${MANGA_PATH}/chap )" -ge "$(date -d 'yesterday' +%s)" ]]
+    then
+        return 0
+    fi
+
+    mkdir -p ${SESSION_CACHE}/${MANGA_SLUG}/chapters
+
+    [ ! -s ${MANGA_PATH}/chap ] && printf "" > ${MANGA_PATH}/chap
+
+    QUERY_STRINGS="--url-query lang=${LANGUAGE} --url-query chap-order=1 --url-query limit=${CHAPTER_LIMIT}"
+    MANGA_JSON="$(format_run "$CURL_CMD $QUERY_STRINGS" "${BASE_URL}/comic/${MANGA_HID}/chapters")"
+
+    export MANGA_PATH
+    echo $MANGA_JSON | jq -r '.chapters[] | @base64' | parallel "$PARALLEL_OPTS" 'get_chapter_info "$(echo {} | base64 -d | jq -r .)" "$MANGA_PATH"'
+}
+
+export_vars(){
+    export -f _draw_preview _display_text_right _display_text_below _download_chapter format_run get_chapter_info get_info 
+    export BASE_URL CURL_CMD CURL_DL SESSION_CACHE DL_FOLDER
+}
+
+run_fzf (){
+    [ ! -d $SESSION_CACHE ] && echo "please run \`${0##*/} update\` first" && return 1
+    declare -r -x UEBERZUG_FIFO="$(mktemp --dry-run --suffix "fzf-$$-ueberzug")"
+    declare -r -x PREVIEW_ID="preview"
+
+    _start_ueberzug
+
+    if [[ $DETAIL_BELOW == "" ]]
+    then
+        TXT_POSITION="right"
+    else
+        TXT_POSITION="below"
+    fi
+
+    SELECTED_MANGA=$(ls $SESSION_CACHE | fzf "$@" --bind "ctrl-r:reload:ls $SESSION_CACHE" --preview-window right:wrap --preview "_draw_preview $SESSION_CACHE/{}/thumbnail.jpg ; awk 'NR!=1 {print}' $SESSION_CACHE/{}/info | _display_text_$TXT_POSITION")
+    [ !  $? -eq 0 ] && exit 1
+    _finalise_ueberzug
+    MANGA_HID=$(awk -F: 'NR == 1 { print $2 }' ${SESSION_CACHE}/${SELECTED_MANGA}/info | tr -d "[[:space:]]")
+    get_all_chapters_info "$MANGA_HID" "${SELECTED_MANGA}"
+
+
+    cat "${SESSION_CACHE}/${SELECTED_MANGA}/chap" | fzf -m -d, --with-nth=2 --preview "cat <(echo {} | cut -d, -f 1 | xargs -I {} sh -c \"cat ${SESSION_CACHE}/${SELECTED_MANGA}/chapters/{}/info\")" | parallel "$PARALLEL_OPTS" "_download_chapter \$(echo '{}' | cut -d, -f1) ${DL_FOLDER}/${SELECTED_MANGA}"
+}
+
+export_vars
+case $1 in
+    update)
+        create_cache
+        ;;
+    help|h|-h|--help)
+        help
+        ;;
+    fzf)
+        run_fzf
+        ;;
+    search)
+        search "${@}"
+        ;;
+    *)
+        [ -n "$1" ] && search "${@}" || run_fzf
+        ;;
+esac
