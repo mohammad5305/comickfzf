@@ -15,7 +15,7 @@ Fzf script for downloading comicks/mangas from comick.app
 1. clone the project
 2. copy `comickfzf` to one of `PATH` directories
 
-### Usage
+## Usage
 first the script needs to store trend mangas in `$CACHE_SESSION` directory using (it takes some time be patient :) )
 ```sh
 comickfzf update
@@ -25,7 +25,7 @@ and then run
 comickfzf fzf
 ```
 
-#### Searching for a manga
+### Searching for a manga
 use `search` option
 ```
 comickfzf search <name>
